@@ -12,6 +12,11 @@ export default function KickLog() {
   const [assignMode, setAssignMode] = useState(null);
   const [phase, setPhase] = useState("upload");
   const [previewFrame, setPreviewFrame] = useState(null);
+  const [aiStatus, setAiStatus] = useState(null);
+  const [aiProgress, setAiProgress] = useState(0);
+  const [aiError, setAiError] = useState(null);
+  const [playerSummaries, setPlayerSummaries] = useState({});
+  const [summaryLoading, setSummaryLoading] = useState({});
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const PLAYER_COLORS = ["#00e68a","#00b8ff","#ff6b6b","#ffc800","#c77dff","#ff8c42","#4ecdc4","#ff6392","#a8e6cf","#dda0dd"];
@@ -107,6 +112,93 @@ export default function KickLog() {
     a.download = "kicklog_summary.txt";
     a.click();
   };
+  const autoTagWithAI = useCallback(async () => {
+    if (frames.length === 0) return;
+    setAiError(null);
+    setAiStatus("Identifying players...");
+    setAiProgress(10);
+    try {
+      const step = Math.max(1, Math.floor(frames.length / 10));
+      const sampleFrames = frames.filter((_, i) => i % step === 0).slice(0, 12).map((f) => ({ id: f.id, dataUrl: f.dataUrl }));
+      const idRes = await fetch("/.netlify/functions/identify-players", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sampleFrames }),
+      });
+      if (!idRes.ok) { const e = await idRes.json().catch(() => ({})); throw new Error(e.error || "Failed to identify players"); }
+      const { players: identifiedPlayers } = await idRes.json();
+      if (!identifiedPlayers || identifiedPlayers.length === 0) throw new Error("No players identified in frames");
+      setAiProgress(30);
+      setAiStatus(`Found ${identifiedPlayers.length} players. Tagging frames...`);
+      const newPlayers = identifiedPlayers.map((p, i) => ({
+        id: `ai_${Date.now()}_${i}`,
+        name: p.label,
+        description: p.description,
+        team: p.team || "unknown",
+        color: PLAYER_COLORS[i % PLAYER_COLORS.length],
+        frames: [],
+      }));
+      const BATCH_SIZE = 6;
+      const allTags = {};
+      const totalBatches = Math.ceil(frames.length / BATCH_SIZE);
+      for (let b = 0; b < totalBatches; b++) {
+        const batch = frames.slice(b * BATCH_SIZE, (b + 1) * BATCH_SIZE).map((f) => ({ id: f.id, dataUrl: f.dataUrl }));
+        setAiStatus(`Tagging batch ${b + 1}/${totalBatches}...`);
+        setAiProgress(30 + Math.round((b / totalBatches) * 60));
+        const tagRes = await fetch("/.netlify/functions/tag-frames", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ batch, playerDescriptions: identifiedPlayers }),
+        });
+        if (!tagRes.ok) { const e = await tagRes.json().catch(() => ({})); throw new Error(e.error || `Tagging batch ${b + 1} failed`); }
+        const { tags } = await tagRes.json();
+        if (tags) Object.assign(allTags, tags);
+      }
+      const finalPlayers = newPlayers.map((p) => {
+        const taggedFrameIds = Object.entries(allTags)
+          .filter(([, labels]) => labels.includes(p.name))
+          .map(([frameId]) => frameId);
+        return { ...p, frames: taggedFrameIds };
+      });
+      setPlayers(finalPlayers);
+      setAiProgress(100);
+      setAiStatus("Done!");
+      setTimeout(() => { setAiStatus(null); setAiProgress(0); }, 2000);
+    } catch (err) {
+      setAiError(err.message);
+      setAiStatus(null);
+      setAiProgress(0);
+    }
+  }, [frames, PLAYER_COLORS]);
+  const generatePlayerSummary = useCallback(async (player) => {
+    setSummaryLoading((prev) => ({ ...prev, [player.id]: true }));
+    try {
+      const taggedFrames = player.frames
+        .map((fId) => frames.find((f) => f.id === fId))
+        .filter(Boolean)
+        .sort((a, b) => a.time - b.time);
+      const timestamps = taggedFrames.map((f) => formatTime(f.time)).join(", ");
+      const frameDataUrls = taggedFrames.slice(0, 20).map((f) => f.dataUrl);
+      const res = await fetch("/.netlify/functions/generate-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerLabel: player.name,
+          playerDescription: player.description || "",
+          frameCount: taggedFrames.length,
+          timestamps,
+          frameDataUrls,
+        }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Summary generation failed"); }
+      const { summary } = await res.json();
+      setPlayerSummaries((prev) => ({ ...prev, [player.id]: summary }));
+    } catch (err) {
+      setPlayerSummaries((prev) => ({ ...prev, [player.id]: `Error: ${err.message}` }));
+    } finally {
+      setSummaryLoading((prev) => ({ ...prev, [player.id]: false }));
+    }
+  }, [frames, formatTime]);
   const activePlayer = players.find((p) => p.id === assignMode);
   return (
     <div style={{ minHeight: "100vh", background: "#080c14", color: "#e4e8f0", fontFamily: "'DM Sans', sans-serif" }}>
@@ -245,6 +337,25 @@ export default function KickLog() {
               <button className="btn btn-go btn-xs" onClick={addPlayer}>+</button>
             </div>
             <div style={{ borderTop: "1px solid #141c2b", marginTop: 20, paddingTop: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10 }}>AI Tagging</div>
+              <button className="btn btn-go btn-sm" disabled={!!aiStatus || frames.length === 0} onClick={autoTagWithAI}
+                style={{ width: "100%", justifyContent: "center", marginBottom: 6, opacity: aiStatus ? 0.5 : 1 }}>
+                {aiStatus || "Auto-Tag with AI"}
+              </button>
+              {aiProgress > 0 && aiProgress < 100 && (
+                <div style={{ height: 3, background: "#141c2b", borderRadius: 2, overflow: "hidden", marginBottom: 6 }}>
+                  <div style={{ height: "100%", width: `${aiProgress}%`, background: "linear-gradient(90deg, #00e68a, #00b8ff)", transition: "width 0.3s" }} />
+                </div>
+              )}
+              {aiError && (
+                <div style={{ fontSize: 11, color: "#ff6b6b", marginBottom: 6, padding: "6px 8px", background: "rgba(255,107,107,0.08)", borderRadius: 4, lineHeight: 1.4 }}>
+                  {aiError}
+                  <button className="btn-xs btn-ghost" onClick={() => setAiError(null)} style={{ marginLeft: 6, fontSize: 10 }}>✕</button>
+                </div>
+              )}
+              <div style={{ fontSize: 10, color: "#334155", lineHeight: 1.4, marginBottom: 4 }}>Uses Gemini Flash to identify players and tag frames automatically.</div>
+            </div>
+            <div style={{ borderTop: "1px solid #141c2b", marginTop: 16, paddingTop: 16 }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#475569", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10 }}>Export</div>
               <button className="btn btn-ghost btn-sm" style={{ width: "100%", justifyContent: "center", marginBottom: 6 }} onClick={downloadSummary}>
                 📋 Summary (.txt)
@@ -305,7 +416,7 @@ export default function KickLog() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
             <div>
               <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-0.5px" }}>Player Review</h2>
-              <p style={{ fontSize: 13, color: "#64748b", marginTop: 4 }}>Download per-player frames, then upload them to Claude chat for action analysis.</p>
+              <p style={{ fontSize: 13, color: "#64748b", marginTop: 4 }}>Review tagged frames per player, generate AI summaries, or download for manual analysis.</p>
             </div>
             <button className="btn btn-ghost btn-sm" onClick={() => setPhase("frames")}>← Back to Tagging</button>
           </div>
@@ -321,6 +432,11 @@ export default function KickLog() {
                   <button className="btn btn-ghost btn-xs" onClick={() => {
                     taggedFrames.forEach((f, i) => { setTimeout(() => downloadFrame(f, player.name), i * 200); });
                   }}>Download {player.name}'s frames</button>
+                  <button className="btn btn-go btn-xs" disabled={summaryLoading[player.id] || taggedFrames.length === 0}
+                    onClick={(e) => { e.stopPropagation(); generatePlayerSummary(player); }}
+                    style={{ opacity: summaryLoading[player.id] ? 0.5 : 1 }}>
+                    {summaryLoading[player.id] ? "Generating..." : playerSummaries[player.id] ? "Regenerate" : "AI Summary"}
+                  </button>
                 </div>
                 {taggedFrames.length === 0 ? (
                   <div style={{ padding: 16, color: "#334155", fontSize: 13, background: "#0d1117", borderRadius: 8, textAlign: "center" }}>No frames tagged</div>
@@ -334,6 +450,12 @@ export default function KickLog() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+                {playerSummaries[player.id] && (
+                  <div style={{ marginTop: 10, padding: "14px 16px", background: "#0d1117", borderRadius: 8, border: "1px solid #1e293b", fontSize: 13, color: "#c9d1d9", lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#00e68a", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>AI Analysis</div>
+                    {playerSummaries[player.id]}
                   </div>
                 )}
               </div>
