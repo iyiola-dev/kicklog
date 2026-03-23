@@ -262,11 +262,16 @@ export default function KickLog() {
               <div style={{ fontWeight: 700, fontSize: 20, letterSpacing: "-0.5px" }}>KickLog</div>
             </div>
             <h1 style={{ fontSize: 32, fontWeight: 700, letterSpacing: "-1px", lineHeight: 1.2, marginBottom: 10 }}>
-              Extract frames.<br />Tag players.<br /><span style={{ color: "#00e68a" }}>Analyze in chat.</span>
+              Upload. Extract.<br /><span style={{ color: "#00e68a" }}>AI does the rest.</span>
             </h1>
             <p style={{ color: "#64748b", fontSize: 15, lineHeight: 1.6 }}>
-              Upload your Sunday match video, grab frames at any interval, tag who's who, then download labeled frames to bring back to Claude for action analysis.
+              Drop your match video and let AI identify every player, tag them across frames, and generate tactical performance summaries — all automatically.
             </p>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 16 }}>
+              {["Gemini Vision Auto-Tagging", "Claude Tactical Summaries", "Per-Player Analysis"].map((t) => (
+                <span key={t} style={{ fontSize: 11, fontWeight: 600, padding: "5px 12px", borderRadius: 99, background: "rgba(0,230,138,0.08)", color: "#00e68a", border: "1px solid rgba(0,230,138,0.15)" }}>{t}</span>
+              ))}
+            </div>
           </div>
           <div onClick={() => document.getElementById("vid-input").click()}
             style={{ border: `2px dashed ${video ? "#00e68a" : "#1e293b"}`, borderRadius: 12, padding: "44px 20px", textAlign: "center", cursor: "pointer", background: video ? "rgba(0,230,138,0.04)" : "transparent", transition: "all 0.15s" }}>
